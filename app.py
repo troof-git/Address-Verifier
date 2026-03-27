@@ -7,7 +7,7 @@ from geopy.geocoders import Nominatim
 import io
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Address Verifier Pro", layout="wide")
+st.set_page_config(page_title="Address Verifier", layout="wide")
 
 # Initialize Session Memory for the Map and Results
 if 'map_data' not in st.session_state:
@@ -30,7 +30,7 @@ def normalize_street(text):
         text = re.sub(abbrev, full, text)
     return text
 
-st.title("🚀 Professional Address Verifier")
+st.title("🌍 Address Verifier")
 st.markdown("Verify house number ranges against your master database and view locations on OpenStreetMap.")
 
 # --- SIDEBAR - MASTER DATA ---
