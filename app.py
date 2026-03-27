@@ -9,14 +9,11 @@ import io
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="Address Verifier", layout="wide")
 
-# Initialize Session Memory for the Map and Results
 if 'map_data' not in st.session_state:
     st.session_state.map_data = None
 
-# Geocoder setup
-geolocator = Nominatim(user_agent="address_verifier_final_2026")
+geolocator = Nominatim(user_agent="multi_segment_verifier_2026")
 
-# --- NORMALIZATION LOGIC ---
 def normalize_street(text):
     if not isinstance(text, str): return ""
     text = text.upper().strip()
@@ -31,19 +28,17 @@ def normalize_street(text):
     return text
 
 st.title("🌍 Address Verifier")
-st.markdown("Verify house number ranges against your master database and view locations on OpenStreetMap.")
+st.markdown("This version identifies all matching street segments for overlapping or split ranges.")
 
 # --- SIDEBAR - MASTER DATA ---
 st.sidebar.header("1. Master Database")
 master_file = st.sidebar.file_uploader("Upload Master CSV", type="csv")
 
 if master_file:
-    # Load and clean master data headers
     master_df = pd.read_csv(master_file)
     master_df.columns = [c.strip().lower() for c in master_df.columns]
     m_cols = master_df.columns.tolist()
     
-    # Set default column mappings
     def_street = "street name" if "street name" in m_cols else m_cols[0]
     def_low = "low" if "low" in m_cols else m_cols[0]
     def_high = "high" if "high" in m_cols else m_cols[0]
@@ -52,18 +47,19 @@ if master_file:
     m_low = st.sidebar.selectbox("Low Number Column", m_cols, index=m_cols.index(def_low))
     m_high = st.sidebar.selectbox("High Number Column", m_cols, index=m_cols.index(def_high))
 
-    # Pre-normalize for speed
+    # Clean and pre-normalize Master List
     master_df['norm_street'] = master_df[m_street].apply(normalize_street)
+    # Ensure low/high are treated as numbers
+    master_df[m_low] = pd.to_numeric(master_df[m_low], errors='coerce')
+    master_df[m_high] = pd.to_numeric(master_df[m_high], errors='coerce')
 
     # --- TABS ---
     mode = st.tabs(["Single Lookup", "Bulk Process"])
 
-    # SINGLE LOOKUP TAB
     with mode[0]:
-        search_query = st.text_input("Paste Full Address:", placeholder="e.g. 123 Main St", key="search_input")
+        search_query = st.text_input("Paste Full Address:", placeholder="e.g. 450 Main St", key="search_input")
         
         if st.button("Verify & Map"):
-            # Use Regex to split number and street
             match_parse = re.match(r"(\d+)\s+(.*)", search_query.strip())
             
             if match_parse:
@@ -71,55 +67,52 @@ if master_file:
                 street_raw = match_parse.group(2).split(',')[0].strip()
                 street_norm = normalize_street(street_raw)
 
-                # Logic Check
+                # Find ALL rows where the street matches AND the number is in range
                 mask = (
                     master_df['norm_street'].str.contains(street_norm, na=False) &
-                    (pd.to_numeric(master_df[m_low], errors='coerce') <= num) &
-                    (pd.to_numeric(master_df[m_high], errors='coerce') >= num)
+                    (master_df[m_low] <= num) &
+                    (master_df[m_high] >= num)
                 )
                 res = master_df[mask]
 
                 if not res.empty:
-                    # Capture coordinates
                     try:
                         loc = geolocator.geocode(search_query)
-                        # Save to session state to prevent disappearing on rerun
                         st.session_state.map_data = {
                             "df": res.drop(columns=['norm_street']),
                             "query": search_query,
-                            "coords": (loc.latitude, loc.longitude) if loc else None
+                            "coords": (loc.latitude, loc.longitude) if loc else None,
+                            "count": len(res)
                         }
                     except:
                         st.session_state.map_data = {
                             "df": res.drop(columns=['norm_street']),
                             "query": search_query,
-                            "coords": None
+                            "coords": None,
+                            "count": len(res)
                         }
                 else:
                     st.session_state.map_data = None
-                    st.error(f"❌ No range match found for {num} {street_norm}")
+                    st.error(f"❌ No matching segment found for {num} {street_norm}.")
             else:
                 st.warning("Please enter a format like: '100 Main St'")
 
-        # Display persistent result if it exists in memory
         if st.session_state.map_data:
             data = st.session_state.map_data
-            st.success(f"Verified Record for: {data['query']}")
-            st.dataframe(data['df'])
+            st.success(f"✅ Found {data['count']} matching segment(s) for: {data['query']}")
+            st.table(data['df']) # Using st.table to show all matching segments clearly
             
             if data['coords']:
                 m = folium.Map(location=data['coords'], zoom_start=16)
                 folium.Marker(location=data['coords'], popup=data['query']).add_to(m)
                 st_folium(m, width=900, height=500, key="persistent_osm_map")
-            else:
-                st.info("Address valid in CSV, but coordinates could not be found for the map.")
 
-    # BULK PROCESS TAB
     with mode[1]:
+        # Bulk Process remains robust to multi-segments
         bulk_file = st.file_uploader("Upload CSV list to check", type="csv")
         if bulk_file:
             b_df = pd.read_csv(bulk_file)
-            b_col = st.selectbox("Select address column to verify", b_df.columns)
+            b_col = st.selectbox("Select address column", b_df.columns)
             
             if st.button("Run Bulk Verification"):
                 bulk_results = []
@@ -129,15 +122,16 @@ if master_file:
                     if p:
                         n, s_raw = int(p.group(1)), p.group(2).split(',')[0].strip()
                         s_norm = normalize_street(s_raw)
+                        # Check if ANY row in master matches
                         mask = (master_df['norm_street'].str.contains(s_norm, na=False) & 
-                                (pd.to_numeric(master_df[m_low], errors='coerce') <= n) & 
-                                (pd.to_numeric(master_df[m_high], errors='coerce') >= n))
-                        if not master_df[mask].empty: status = "✅ Valid"
+                                (master_df[m_low] <= n) & 
+                                (master_df[m_high] >= n))
+                        if not master_df[mask].empty: 
+                            status = f"✅ Valid ({len(master_df[mask])} seg)"
                     bulk_results.append({"Address": addr, "Result": status})
                 
                 final_bulk_df = pd.DataFrame(bulk_results)
                 st.dataframe(final_bulk_df)
-                st.download_button("📥 Download Results CSV", final_bulk_df.to_csv(index=False), "bulk_results.csv", "text/csv")
-
+                st.download_button("📥 Download Results", final_bulk_df.to_csv(index=False), "bulk_results.csv", "text/csv")
 else:
-    st.info("👋 Welcome! Please upload your Master CSV in the sidebar to start verifying addresses.")
+    st.info("Please upload your Master CSV to start.")
